@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+import re
+
+with open('tst.srt', 'r') as myfile:
+    data=myfile.read()
+
+print(data)
+
+# print("\nSubtitulos:")
+
+subt = re.compile(r"""
+    ^(?P<subN>\d+)\n
+    (?P<h1>\d+):
+    (?P<m1>\d+):
+    (?P<s1>\d+),
+    (?P<ms1>\d+)
+    \s+ --> \s+
+    (?P<h2>\d+):
+    (?P<m2>\d+):
+    (?P<s2>\d+),
+    (?P<ms2>\d+)\n
+    """, re.VERBOSE | re.MULTILINE)
+
+
+def to_ms(h, m, s, ms):
+    ms = ms[:3]
+    while len(ms) < 3:
+        ms = ms+'0'
+    return int(ms) + int(s)*1000 + int(m)*60*1000 + int(h)*60*60*1000
+
+def to_hmsms(tot):
+    ms = str(tot%1000)
+    tot = tot//1000
+    s = str(tot%60)
+    tot = tot//60
+    m = str(tot%60)
+    h = str(tot//60)
+    while len(ms) < 3:
+        ms = '0'+ms
+    if len(s) < 2:
+        s = '0'+s
+    if len(m) < 2:
+        m = '0'+m
+    if len(h) < 2:
+        h = '0'+h
+    return h+':'+m+':'+s+','+ms
+
+def desp(d):
+    def desp2(match):
+        subN, h1, m1, s1, ms1, h2, m2, s2, ms2 = \
+            match.group('subN', 'h1', 'm1', 's1', 'ms1', 'h2', 'm2', 's2', 'ms2')
+        ret = subN + '\n' \
+                + to_hmsms(to_ms(h1,m1,s1,ms1)+d) \
+                + ' --> ' \
+                + to_hmsms(to_ms(h2,m2,s2,ms2)+d) + '\n'
+        return ret
+    return desp2
+
+data = subt.sub(desp(5), data)
+print('\n\n')
+print(data)
