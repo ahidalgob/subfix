@@ -1,26 +1,6 @@
 #!/usr/bin/env python3
 import re
-
-with open('tst.srt', 'r') as myfile:
-    data=myfile.read()
-
-print(data)
-
-# print("\nSubtitulos:")
-
-subt = re.compile(r"""
-    ^(?P<subN>\d+)\n
-    (?P<h1>\d+):
-    (?P<m1>\d+):
-    (?P<s1>\d+),
-    (?P<ms1>\d+)
-    \s+ --> \s+
-    (?P<h2>\d+):
-    (?P<m2>\d+):
-    (?P<s2>\d+),
-    (?P<ms2>\d+)\n
-    """, re.VERBOSE | re.MULTILINE)
-
+import sys
 
 def to_ms(h, m, s, ms):
     ms = ms[:3]
@@ -47,15 +27,59 @@ def to_hmsms(tot):
 
 def desp(d):
     def desp2(match):
-        subN, h1, m1, s1, ms1, h2, m2, s2, ms2 = \
-            match.group('subN', 'h1', 'm1', 's1', 'ms1', 'h2', 'm2', 's2', 'ms2')
+        subN, h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
+            match.group('subN', 'h1', 'm1', 's1', 'ms1', \
+                            'h2', 'm2', 's2', 'ms2', 'txt')
         ret = subN + '\n' \
                 + to_hmsms(to_ms(h1,m1,s1,ms1)+d) \
                 + ' --> ' \
-                + to_hmsms(to_ms(h2,m2,s2,ms2)+d) + '\n'
+                + to_hmsms(to_ms(h2,m2,s2,ms2)+d) + '\n' + txt
         return ret
     return desp2
 
-data = subt.sub(desp(5), data)
-print('\n\n')
-print(data)
+subtitle_regex = re.compile(r"""
+    ^(?P<subN>\d+)\n
+    (?P<first_time>(?P<h1>\d+):
+    (?P<m1>\d+):
+    (?P<s1>\d+),
+    (?P<ms1>\d+))
+    \s+ --> \s+
+    (?P<h2>\d+):
+    (?P<m2>\d+):
+    (?P<s2>\d+),
+    (?P<ms2>\d+)\n
+    (?P<txt>.*? (?=\n*(\d+\n\d+:\d+:\d+,\d+ \s+ --> \s+ \d+:\d+:\d+,\d+)|\Z) )
+    """, re.VERBOSE | re.MULTILINE | re.DOTALL)
+
+time_regex = re.compile(r"""
+    (?P<h1>\d+):
+    (?P<m1>\d+):
+    (?P<s1>\d+),
+    (?P<ms1>\d+)
+    """, re.VERBOSE | re.MULTILINE)
+
+if __name__ == '__main__':
+    with open('tst.srt', 'r') as myfile:
+        data=myfile.read()
+
+    firstm = subtitle_regex.search(data)
+    if firstm == None:
+        print("The file isn't a valid str file D:\n")
+        sys.exit(0)
+
+    print("Insert the desired time for:\n\n"+firstm.group('txt'))
+    print("\n(Currently at time "+ firstm.group('first_time') +")")
+    print("Please insert the desired time in the following format:\n\
+    hours:minutes:seconds,milliseconds")
+    desired = None
+    while desired is None:
+        desired = time_regex.match(input('Desired time: '))
+        if desired is None:
+            print('Invalid format.')
+
+    hi, mi, si, msi = firstm.group('h1', 'm1', 's1', 'ms1')
+    hf, mf, sf, msf = desired.group('h1', 'm1', 's1', 'ms1')
+    dif = to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
+    data = subtitle_regex.sub(desp(dif), data)
+    print('\n\n')
+    print(data)
