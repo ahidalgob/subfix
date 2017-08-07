@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 import re
-import sys
+import sys, os
 import argparse
 import subprocess, tempfile
+
+import credentials
 
 def to_ms(h, m, s, ms):
     ms = ms[:3]
@@ -10,7 +12,7 @@ def to_ms(h, m, s, ms):
         ms = ms+'0'
     return int(ms) + int(s)*1000 + int(m)*60*1000 + int(h)*60*60*1000
 
-def to_hmsms(tot):
+def to_hmsms(tot, mss=','):
     def fix_len(s, l):
         while len(s) < l:
             s = '0'+s
@@ -25,7 +27,7 @@ def to_hmsms(tot):
     s = fix_len(s, 2)
     m = fix_len(m, 2)
     h = fix_len(h, 2)
-    return h+':'+m+':'+s+','+ms
+    return h+':'+m+':'+s+mss+ms
 
 ########### Returns a function that d
 def shift(d):
@@ -70,7 +72,7 @@ def simple_sync(all_matches, tmp_file):
     input('(Press enter to continue)')
 
     tmp_file.flush()
-    subprocess.call(['less', tmp_file.name])
+    subprocess.run(['less', tmp_file.name])
     tmp_file.close()
 
 
@@ -104,9 +106,30 @@ def simple_sync(all_matches, tmp_file):
 
     hi, mi, si, msi = selected_match.group('h1', 'm1', 's1', 'ms1')
     hf, mf, sf, msf = desired.group('h1', 'm1', 's1', 'ms1')
-    dif = to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
+    return to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
 
-    return subtitle_regex.sub(shift(dif), subtitles_text)
+
+#######################################################
+########### Amazing Scan
+#######################################################
+def get_transcription(movie_filename, start_time):
+
+    with tempfile.NamedTemporaryFile(suffix='.aac') as fp:
+    #with open('audio.aac','w') as fp:  # TESTING
+        subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
+            +' -vn -acodec copy -ss ' + to_hmsms(start_time, '.')
+            + ' -t ' + to_hmsms(60*1000 -2, '.') + ' \"'+ fp.name + '\"'],
+            stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, shell=True)
+
+
+def amazing_sync(all_matches, movie_filename):
+    # Check if movie file name makes sense
+    # Determine the audio interval we want to rip from the video
+    get_transcription(movie_filename, 10*(60*1000))
+    # Get best match
+    print('TO DO')
+    return 0
+
 
 
 ########### MAIN
@@ -145,10 +168,11 @@ if __name__ == '__main__':
     print('\nNote that the srt file will be OVERWRITTEN!')
 
     if movie_filename is None:
-        subtitles_text = simple_sync(all_matches, tmp_file)
+        dif = simple_sync(all_matches, tmp_file)
     else:
-        print('TO DO')
+        dif = amazing_sync(all_matches, movie_filename)
 
+    subtitles_text = subtitle_regex.sub(shift(dif), subtitles_text)
 
     with open(filename, 'w') as myfile:
         myfile.write(subtitles_text)
