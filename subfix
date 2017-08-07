@@ -27,8 +27,9 @@ def to_hmsms(tot):
     h = fix_len(h, 2)
     return h+':'+m+':'+s+','+ms
 
-def desp(d):
-    def internal_desp(match):
+########### Returns a function that d
+def shift(d):
+    def internal_shift(match):
         subN, h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
             match.group('subN', 'h1', 'm1', 's1', 'ms1', \
                             'h2', 'm2', 's2', 'ms2', 'txt')
@@ -39,7 +40,7 @@ def desp(d):
         ret = subN + to_hmsms(to_ms(h1,m1,s1,ms1)+d) + ' --> ' \
                 + to_hmsms(to_ms(h2,m2,s2,ms2)+d) + '\n' + txt
         return ret
-    return internal_desp
+    return internal_shift
 
 subtitle_regex = re.compile(r"""
     ((?P<subN>\d+)\n)?
@@ -62,49 +63,33 @@ time_regex = re.compile(r"""
     (?P<ms1>\d+)
     """, re.VERBOSE | re.MULTILINE)
 
-if __name__ == '__main__':
-    if len(sys.argv) == 1:
-        print("Error: please give the name of the srt file as the argument.")
-        sys.exit(0)
 
-    filename = sys.argv[1]
-    try:
-        with open(filename, 'r') as myfile:
-            subtitles_data = myfile.read()
-    except:
-        print("Error: the file doesn't exists or couldn't be opened D:\n")
-        sys.exit(0)
-
-    tmp_file = open(tempfile.mkstemp()[1], 'w')
-    matches_iterator = subtitle_regex.finditer(subtitles_data)
-    all_matches = []
-    i = 1
-    for match in matches_iterator:
-        print(i, ': ', match.group('txt').replace('\n',' '), '\n', sep=' ', file=tmp_file)
-        all_matches.append(match)
-        i += 1
-
-    if i==1:
-        print("Error: the file isn't a valid str file D:\n")
-        sys.exit(0)
-
-    print('\nNote that the file will be OVERWRITTEN!')
+def simple_sync(all_matches, tmp_file):
+    ########### GET THE SUBTITLE TO SYNC
     print('Look for the number of the entry you want to use to sync and then press \'q\'')
-    input()
+    input('(Press enter to continue)')
 
     tmp_file.flush()
     subprocess.call(['less', tmp_file.name])
     tmp_file.close()
+
+
     selected_match = None
     while selected_match is None:
         try:
             i = int(input('Entry number: '))-1
             assert(0 <= i <= len(all_matches))
             selected_match = all_matches[i]
+        except KeyboardInterrupt:
+            sys.exit(0)
         except:
             print('Invalid entry number.')
+    ############################################
 
-    print("\nInsert the desired time for:\n   "+selected_match.group('txt').replace('\n',' '))
+
+    ########### GET THE DESIRED TIME
+    print("\nInsert the desired time for:\n   "
+            +selected_match.group('txt').replace('\n',' '))
     print("\n(Currently at time "+ selected_match.group('first_time') +")")
     print("Please insert the desired time in the following format:\n\
     hours:minutes:seconds,milliseconds")
@@ -114,14 +99,51 @@ if __name__ == '__main__':
         desired = time_regex.match(input('Desired time: '))
         if desired is None:
             print('Invalid format, YOU CAN DO IT!.')
+    ############################################
+
 
     hi, mi, si, msi = selected_match.group('h1', 'm1', 's1', 'ms1')
     hf, mf, sf, msf = desired.group('h1', 'm1', 's1', 'ms1')
     dif = to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
 
-    subtitles_data = subtitle_regex.sub(desp(dif), subtitles_data)
-    
+    return subtitle_regex.sub(shift(dif), subtitles_text)
+
+
+########### MAIN
+if __name__ == '__main__':
+    if len(sys.argv) == 1:
+        print("Error: Please give the name of the srt file as the first argument.")
+        sys.exit(0)
+
+    filename = sys.argv[1]
+    try:
+        with open(filename, 'r') as myfile:
+            subtitles_text = myfile.read()
+    except:
+        print("Error: the srt file doesn't exists or couldn't be opened D:\n")
+        sys.exit(0)
+
+    matches_iterator = subtitle_regex.finditer(subtitles_text)
+    tmp_file = open(tempfile.mkstemp()[1], 'w')   # tmp_file is used to get the more/less behavior
+    all_matches = []
+    i = 1
+    for match in matches_iterator:
+        print(i, ': ', match.group('txt').replace('\n',' '), 
+                '\n', sep=' ', file=tmp_file)
+        all_matches.append(match)
+        i += 1
+
+    if i==1:
+        print("Error: the file isn't a valid str file D:\n")
+        sys.exit(0)
+
+    print('\nNote that the file will be OVERWRITTEN!')
+
+    if len(sys.argv) == 2:
+        subtitles_text = simple_sync(all_matches, tmp_file)
+    else:
+        print('TO DO')
 
 
     with open(filename, 'w') as myfile:
-        myfile.write(subtitles_data)
+        myfile.write(subtitles_text)
