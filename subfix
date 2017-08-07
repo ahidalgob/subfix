@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import re
 import sys
-
+import argparse
 import subprocess, tempfile
 
 def to_ms(h, m, s, ms):
@@ -111,20 +111,25 @@ def simple_sync(all_matches, tmp_file):
 
 ########### MAIN
 if __name__ == '__main__':
-    if len(sys.argv) == 1:
-        print("Error: Please give the name of the srt file as the first argument.")
-        sys.exit(0)
+    parser = argparse.ArgumentParser(description='Subtitles syncer.')
 
-    filename = sys.argv[1]
+    parser.add_argument('srt_file', help='The srt file to sync.')
+    parser.add_argument('movie_file', nargs='?',
+        help='The movie file that will be used to sync the srt file.')
+
+    args = parser.parse_args()
+    filename, movie_filename = args.srt_file, args.movie_file
+
     try:
         with open(filename, 'r') as myfile:
             subtitles_text = myfile.read()
     except:
-        print("Error: the srt file doesn't exists or couldn't be opened D:\n")
-        sys.exit(0)
+        sys.exit("Error: the srt file doesn't exists or couldn't be opened D:\n")
 
+    ########### Parsing srt file
     matches_iterator = subtitle_regex.finditer(subtitles_text)
-    tmp_file = open(tempfile.mkstemp()[1], 'w')   # tmp_file is used to get the more/less behavior
+    # tmp_file is used to get the more/less behavior
+    tmp_file = open(tempfile.mkstemp()[1], 'w')
     all_matches = []
     i = 1
     for match in matches_iterator:
@@ -134,12 +139,12 @@ if __name__ == '__main__':
         i += 1
 
     if i==1:
-        print("Error: the file isn't a valid str file D:\n")
-        sys.exit(0)
+        sys.exit("Error: the file isn't a valid str file D:\n")
+    ############################################
 
-    print('\nNote that the file will be OVERWRITTEN!')
+    print('\nNote that the srt file will be OVERWRITTEN!')
 
-    if len(sys.argv) == 2:
+    if movie_filename is None:
         subtitles_text = simple_sync(all_matches, tmp_file)
     else:
         print('TO DO')
