@@ -2,6 +2,8 @@
 import re
 import sys
 
+import subprocess, tempfile
+
 def to_ms(h, m, s, ms):
     ms = ms[:3]
     while len(ms) < 3:
@@ -9,24 +11,24 @@ def to_ms(h, m, s, ms):
     return int(ms) + int(s)*1000 + int(m)*60*1000 + int(h)*60*60*1000
 
 def to_hmsms(tot):
+    def fix_len(s, l):
+        while len(s) < l:
+            s = '0'+s
+        return s
     ms = str(tot%1000)
     tot = tot//1000
     s = str(tot%60)
     tot = tot//60
     m = str(tot%60)
     h = str(tot//60)
-    while len(ms) < 3:
-        ms = '0'+ms
-    if len(s) < 2:
-        s = '0'+s
-    if len(m) < 2:
-        m = '0'+m
-    if len(h) < 2:
-        h = '0'+h
+    ms = fix_len(ms, 3)
+    s = fix_len(s, 2)
+    m = fix_len(m, 2)
+    h = fix_len(h, 2)
     return h+':'+m+':'+s+','+ms
 
 def desp(d):
-    def desp2(match):
+    def internal_desp(match):
         subN, h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
             match.group('subN', 'h1', 'm1', 's1', 'ms1', \
                             'h2', 'm2', 's2', 'ms2', 'txt')
@@ -37,7 +39,7 @@ def desp(d):
         ret = subN + to_hmsms(to_ms(h1,m1,s1,ms1)+d) + ' --> ' \
                 + to_hmsms(to_ms(h2,m2,s2,ms2)+d) + '\n' + txt
         return ret
-    return desp2
+    return internal_desp
 
 subtitle_regex = re.compile(r"""
     ((?P<subN>\d+)\n)?
@@ -73,15 +75,37 @@ if __name__ == '__main__':
         print("Error: the file doesn't exists or couldn't be opened D:\n")
         sys.exit(0)
 
-    firstm = subtitle_regex.search(subtitles_data)
-    if firstm == None:
+    tmp_file = open(tempfile.mkstemp()[1], 'w')
+    matches_iterator = subtitle_regex.finditer(subtitles_data)
+    all_matches = []
+    i = 1
+    for match in matches_iterator:
+        print(i, ': ', match.group('txt').replace('\n',' '), '\n', sep=' ', file=tmp_file)
+        all_matches.append(match)
+        i += 1
+
+    if i==1:
         print("Error: the file isn't a valid str file D:\n")
         sys.exit(0)
 
-    print("\nNote that "+filename+" would be overwritten!")
+    print('\nNote that the file will be OVERWRITTEN!')
+    print('Look for the number of the entry you want to use to sync and then press \'q\'')
+    input()
 
-    print("Insert the desired time for:\n\n"+firstm.group('txt'))
-    print("\n(Currently at time "+ firstm.group('first_time') +")")
+    tmp_file.flush()
+    subprocess.call(['less', tmp_file.name])
+    tmp_file.close()
+    selected_match = None
+    while selected_match is None:
+        try:
+            i = int(input('Entry number: '))-1
+            assert(0 <= i <= len(all_matches))
+            selected_match = all_matches[i]
+        except:
+            print('Invalid entry number.')
+
+    print("\nInsert the desired time for:\n   "+selected_match.group('txt').replace('\n',' '))
+    print("\n(Currently at time "+ selected_match.group('first_time') +")")
     print("Please insert the desired time in the following format:\n\
     hours:minutes:seconds,milliseconds")
 
@@ -89,12 +113,15 @@ if __name__ == '__main__':
     while desired is None:
         desired = time_regex.match(input('Desired time: '))
         if desired is None:
-            print('Invalid format.')
+            print('Invalid format, YOU CAN DO IT!.')
 
-    hi, mi, si, msi = firstm.group('h1', 'm1', 's1', 'ms1')
+    hi, mi, si, msi = selected_match.group('h1', 'm1', 's1', 'ms1')
     hf, mf, sf, msf = desired.group('h1', 'm1', 's1', 'ms1')
     dif = to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
+
     subtitles_data = subtitle_regex.sub(desp(dif), subtitles_data)
     
+
+
     with open(filename, 'w') as myfile:
         myfile.write(subtitles_data)
