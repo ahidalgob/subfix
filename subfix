@@ -6,6 +6,9 @@ import subprocess, tempfile
 
 import credentials
 
+import json
+from watson_developer_cloud import SpeechToTextV1
+
 def to_ms(h, m, s, ms):
     ms = ms[:3]
     while len(ms) < 3:
@@ -113,14 +116,37 @@ def simple_sync(all_matches, tmp_file):
 ########### Amazing Scan
 #######################################################
 def get_transcription(movie_filename, start_time):
+    # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
+    # TO DO: GET THE TMP FILE WORKING
+    # TO DO: STUDY ABOUT THE STRUCTURE OF THE TRANSCRIPTION AND
+    #        CONSTRUCT AN EASY TO HANDLE CONTAINER FOR IT
 
-    with tempfile.NamedTemporaryFile(suffix='.aac') as fp:
-    #with open('audio.aac','w') as fp:  # TESTING
+    print('Getting audio.')
+    with open('audio.ogg','w') as fp:  # TESTING
+    # with tempfile.NamedTemporaryFile(suffix='.ogg') as fp:
         subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
-            +' -vn -acodec copy -ss ' + to_hmsms(start_time, '.')
-            + ' -t ' + to_hmsms(60*1000 -2, '.') + ' \"'+ fp.name + '\"'],
-            stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, shell=True)
+            +' -vn -ss ' + to_hmsms(start_time, '.')
+            + ' -t ' + to_hmsms(20*1000 -2, '.') + ' \"'+ fp.name + '\"'],  ### CHANGEEEEEEE 30
+            stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, 
+            shell=True)
 
+    speech_to_text = SpeechToTextV1(
+        username=credentials.USERNAME,
+        password=credentials.PASSWORD,
+        x_watson_learning_opt_out=False
+    )
+
+    # with open(join(dirname(__file__), '../resources/speech.wav'),
+    #           'rb') as audio_file:
+    with open('audio.ogg', 'rb') as audio_file: # TESTING
+        print('Getting transcription.')
+        transcription = speech_to_text.recognize(
+            audio_file, content_type='audio/ogg', timestamps=True,
+            word_confidence=True, model='en-US_NarrowbandModel')
+        transcription = transcription['results']
+        print(json.dumps(transcription, indent=2))
+        for i in range(len(transcription)):
+            print(transcription[i]['alternatives'][0]['transcript'])
 
 def amazing_sync(all_matches, movie_filename):
     # Check if movie file name makes sense
