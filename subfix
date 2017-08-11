@@ -135,13 +135,12 @@ def simple_sync(all_matches):
 #######################################################
 def get_transcription(movie_filename, start_time):
     # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
-
+    # TO DO: MAKE MULTIPLE CONCURRENT TRANSCRIPTION TO SPEED UP THE BOTTLE NECK.
     audio_format = 'ogg'
 
     ########### Rips audio from video
     print('Getting audio.')
     tmp_audio_file = tempfile.NamedTemporaryFile(suffix='.'+audio_format)
-    #with open('audio.'+audio_format,'w') as fp:  # TESTING
     subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
         +' -vn -ss ' + to_hmsms(start_time, '.')
         + ' -t ' + to_hmsms(INTERVAL_LENGTH, '.') + ' \"'+ tmp_audio_file.name + '\"'], 
@@ -155,8 +154,6 @@ def get_transcription(movie_filename, start_time):
         x_watson_learning_opt_out=False
     )
 
-    # with open(join(dirname(__file__), '../resources/speech.wav'),
-    #           'rb') as audio_file:
     with open(tmp_audio_file.name, 'rb') as audio_file: # TESTING
         print('Getting transcription (chatting with watson).')
         transcription = speech_to_text.recognize(
@@ -184,57 +181,56 @@ def get_transcription(movie_filename, start_time):
                         'confidence':bst['word_confidence'][i][1]})
     return words
 
-def get_best(frames, trans_words, with_memo_s=True):
+def get_best(frames, trans_words, with_BS=True):
     # gets score of the match betweed 
     #   the words of frame f from word fw to the end
     #   and the next ntw words from tw
 
     memo, memo_s = {}, set()
 
-    def get_score_(f, fw, tw, ntw):
+    def get_frame_score(f, fw, tw, ntw):
         if fw == len(frames[f]['words']) and ntw==0:
             return 0
         if (f, fw, tw, ntw) in memo:
             return memo[(f, fw, tw, ntw)]
         ret = 0
         if fw!=len(frames[f]['words']):
-            ret = max(ret, get_score_(f, fw+1, tw, ntw))
+            ret = max(ret, get_frame_score(f, fw+1, tw, ntw))
         if ntw !=0:
-            ret = max(ret,  get_score_(f, fw, tw+1, ntw-1))
+            ret = max(ret,  get_frame_score(f, fw, tw+1, ntw-1))
         if fw!=len(frames[f]['words']) and ntw !=0 and \
                     frames[f]['words'][fw] == trans_words[tw]['word']:
-            ret = max(ret, get_score_(f, fw+1, tw+1, ntw-1) + \
+            ret = max(ret, get_frame_score(f, fw+1, tw+1, ntw-1) + \
                         1+trans_words[tw]['confidence'])
         memo[(f,fw,tw,ntw)] = ret
         return ret
 
     def get_score(f, tw, ntw):
-        return get_score_(f, 0, tw, ntw)
+        return get_frame_score(f, 0, tw, ntw)
 
     # s = shift: final-initial times of the frames
     def get_score_s(s):
         total_score = 0
-        if with_memo_s:
-            s = (s//100)*100
-            if s in memo_s:
-                return -1
-            memo_s.add(s)
-        
-        # Get the last frame that starts before than something from the transc.
-        lo, hi = 0, len(frames) -1
-        while lo < hi:
-            mi = (lo+hi+1)//2
-            start = frames[mi]['start'] + s
-            if start > trans_words[0]['middle']:
-                hi = mi-1
-            else:
-                lo = mi
-        i, j = lo, 0
+        memo_s.add(s//100)
 
+        i, j = 0, 0
         while i<len(frames) and j<len(trans_words):
+            if frames[i]['end'] + s < trans_words[j]['middle']:
+                lo, hi = i, len(frames) -1
+                while lo < hi:
+                    mi = (lo+hi+1)//2
+                    start = frames[mi]['start'] + s
+                    if start > trans_words[j]['middle']:
+                        hi = mi-1
+                    else:
+                        lo = mi
+                i = lo
+
             start = frames[i]['start'] + s
             end = frames[i]['end'] + s
+
             while j<len(trans_words) and trans_words[j]['middle'] < start:
+                total_score -= trans_words[j]['confidence']
                 j += 1
             if j<len(trans_words) and trans_words[j]['middle'] <= end:
                 left = j
@@ -250,7 +246,7 @@ def get_best(frames, trans_words, with_memo_s=True):
     for i,fr in enumerate(frames):
         for j,tw in enumerate(trans_words):
             s = tw['start'] - fr['start']
-            if abs(s) < MAX_SHIFT:
+            if s//100 not in memo_s:
                 nscore = get_score_s(s)
                 if nscore > score:
                     score = nscore
@@ -290,14 +286,8 @@ def amazing_sync(all_matches, movie_filename):
     print('Magic happening.')
 
     # start_time = time.time()
-    # get_best(frames, trans_words, True)
+    # get_best(frames, trans_words)
     # print("--- %s seconds ---" % (time.time() - start_time))
-
-    # start_time = time.time()
-    # get_best(frames, trans_words, False)
-    # print("--- %s seconds ---" % (time.time() - start_time))
-    # return 0
-
 
     return get_best(frames, trans_words)
 
