@@ -4,6 +4,8 @@ import sys, os
 import argparse
 import subprocess, tempfile
 
+import magic
+
 import time
 
 import credentials
@@ -77,7 +79,7 @@ time_regex = re.compile(r"""
 
 ########### Simple Sync
 # Asks for a subtitle frame to use as a sync point and then asks for the
-# desire time for such frame.
+# desired time for such frame.
 # Returns the desired shift
 def simple_sync(all_matches):
     # tmp_file is used to get the more/less behavior
@@ -122,7 +124,6 @@ def simple_sync(all_matches):
         if desired is None:
             print('Invalid format, YOU CAN DO IT!.')
     ############################################
-
 
     hi, mi, si, msi = selected_match.group('h1', 'm1', 's1', 'ms1')
     hf, mf, sf, msf = desired.group('h1', 'm1', 's1', 'ms1')
@@ -257,8 +258,19 @@ def get_best(frames, trans_words, with_memo_s=True):
     return ans
 
 def amazing_sync(all_matches, movie_filename):
-    # TO DO: Check if movie file name makes sense
     # TO DO: Determine the audio interval we want to rip from the video
+
+    video_ok = True
+    try:
+        if 'video' not in magic.from_file(movie_filename, mime=True):
+            video_ok = False
+    except:
+        exit('Error: The movie file doesn\'t exists or cannot be opened D:')
+
+    if not video_ok:
+        exit('Error: The movie file is not a video file D:')
+
+
     start_time = 10*(60*1000) # minute 10, TESTING
     trans_words = get_transcription(movie_filename, start_time)
     frames = []
@@ -290,6 +302,7 @@ def amazing_sync(all_matches, movie_filename):
 
 ########### MAIN
 if __name__ == '__main__':
+    # TO DO: Better help and instructions.
     ########### Parsing arguments
     parser = argparse.ArgumentParser(description='Subtitles syncer.')
 
@@ -318,8 +331,6 @@ if __name__ == '__main__':
         sys.exit("Error: the file isn't a valid str file D:\n")
     ############################################
 
-    print('\nNote that the srt file will be OVERWRITTEN!')
-
     if movie_filename is None:
         dif = simple_sync(all_matches)
     else:
@@ -327,5 +338,18 @@ if __name__ == '__main__':
 
     subtitles_text = subtitle_regex.sub(shift(dif), subtitles_text)
 
+    confirm = None
+    while confirm is None:
+        print('The srt file will be OVERWRITTEN. [Y/n]')
+        confirm = input()
+        if confirm == 'Y':
+            pass
+        elif confirm == 'n':
+            print('Canceled.')
+            sys.exit(0)
+        else:
+            print('Invalid option')
+            confirm = None
     with open(filename, 'w') as myfile:
         myfile.write(subtitles_text)
+    print('Done :)')
