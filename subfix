@@ -4,10 +4,15 @@ import sys, os
 import argparse
 import subprocess, tempfile
 
+import time
+
 import credentials
 
 import json
 from watson_developer_cloud import SpeechToTextV1
+
+MAX_SHIFT = 20000000000 * 60 * 1000
+INTERVAL_LENGTH = 60*1000 -2
 
 def to_ms(h, m, s, ms):
     ms = ms[:3]
@@ -15,7 +20,7 @@ def to_ms(h, m, s, ms):
         ms = ms+'0'
     return int(ms) + int(s)*1000 + int(m)*60*1000 + int(h)*60*60*1000
 
-def to_hmsms(tot, mss=','):
+def to_hmsms(tot, ms_separator=','):
     def fix_len(s, l):
         while len(s) < l:
             s = '0'+s
@@ -30,9 +35,10 @@ def to_hmsms(tot, mss=','):
     s = fix_len(s, 2)
     m = fix_len(m, 2)
     h = fix_len(h, 2)
-    return h+':'+m+':'+s+mss+ms
+    return h+':'+m+':'+s+ms_separator+ms
 
-########### Returns a function that d
+########### Returns a function that shifts d milliseconds the 
+# given matched subtitles.
 def shift(d):
     def internal_shift(match):
         subN, h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
@@ -58,7 +64,7 @@ subtitle_regex = re.compile(r"""
     (?P<m2>\d+):
     (?P<s2>\d+),
     (?P<ms2>\d+)\n
-    (?P<txt>.*? (?=\n*((\d+\n)?\d+:\d+:\d+,\d+ \s+ --> \s+ \d+:\d+:\d+,\d+)|\Z) )
+    (?P<txt>.*? (?=\n*((\d+\n)?\d+:\d+:\d+,\d+ \s+ --> \s+ \d+:\d+:\d+,\d+)|\Z))
     """, re.VERBOSE | re.MULTILINE | re.DOTALL)
 
 time_regex = re.compile(r"""
@@ -69,26 +75,37 @@ time_regex = re.compile(r"""
     """, re.VERBOSE | re.MULTILINE)
 
 
-def simple_sync(all_matches, tmp_file):
+########### Simple Sync
+# Asks for a subtitle frame to use as a sync point and then asks for the
+# desire time for such frame.
+# Returns the desired shift
+def simple_sync(all_matches):
+    # tmp_file is used to get the more/less behavior
+    tmp_file = open(tempfile.mkstemp()[1], 'w')
+
+    for i,match in enumerate(all_matches):
+        print(i+1, ': ', match.group('txt').replace('\n',' '), 
+                '\n', sep=' ', file=tmp_file)
+
     ########### GET THE SUBTITLE TO SYNC
-    print('Look for the number of the entry you want to use to sync and then press \'q\'')
+    print('Look for the number of the subtitle frame you want to use to',
+        'sync and then press \'q\'')
     input('(Press enter to continue)')
 
     tmp_file.flush()
     subprocess.run(['less', tmp_file.name])
     tmp_file.close()
 
-
     selected_match = None
     while selected_match is None:
         try:
-            i = int(input('Entry number: '))-1
-            assert(0 <= i <= len(all_matches))
+            i = int(input('Frame number: '))-1
+            assert(0 <= i < len(all_matches))
             selected_match = all_matches[i]
         except KeyboardInterrupt:
             sys.exit(0)
         except:
-            print('Invalid entry number.')
+            print('Invalid frame number.')
     ############################################
 
 
@@ -118,17 +135,19 @@ def simple_sync(all_matches, tmp_file):
 def get_transcription(movie_filename, start_time):
     # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
     # TO DO: GET THE TMP FILE WORKING
-    # TO DO: STUDY ABOUT THE STRUCTURE OF THE TRANSCRIPTION AND
-    #        CONSTRUCT AN EASY TO HANDLE CONTAINER FOR IT
 
+    audio_format = 'ogg'
+
+    ########### Rips audio from video
     print('Getting audio.')
-    with open('audio.ogg','w') as fp:  # TESTING
-    # with tempfile.NamedTemporaryFile(suffix='.ogg') as fp:
+    # with tempfile.NamedTemporaryFile(suffix='.'+audio_format) as fp:
+    with open('audio.'+audio_format,'w') as fp:  # TESTING
         subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
             +' -vn -ss ' + to_hmsms(start_time, '.')
-            + ' -t ' + to_hmsms(20*1000 -2, '.') + ' \"'+ fp.name + '\"'],  ### CHANGEEEEEEE 30
+            + ' -t ' + to_hmsms(INTERVAL_LENGTH, '.') + ' \"'+ fp.name + '\"'], 
             stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, 
             shell=True)
+    ############################################
 
     speech_to_text = SpeechToTextV1(
         username=credentials.USERNAME,
@@ -138,28 +157,140 @@ def get_transcription(movie_filename, start_time):
 
     # with open(join(dirname(__file__), '../resources/speech.wav'),
     #           'rb') as audio_file:
-    with open('audio.ogg', 'rb') as audio_file: # TESTING
-        print('Getting transcription.')
+    with open('audio.'+audio_format, 'rb') as audio_file: # TESTING
+        print('Getting transcription (chatting with watson).')
         transcription = speech_to_text.recognize(
-            audio_file, content_type='audio/ogg', timestamps=True,
-            word_confidence=True, model='en-US_NarrowbandModel')
-        transcription = transcription['results']
-        print(json.dumps(transcription, indent=2))
-        for i in range(len(transcription)):
-            print(transcription[i]['alternatives'][0]['transcript'])
+            audio_file,
+            content_type='audio/'+ audio_format,
+            timestamps=True,
+            word_confidence=True,
+            model='en-US_NarrowbandModel',
+            # model='en-US_BroadbandModel',
+            # word_alternatives_threshold=0.3,
+            # keywords={"math"}, keywords_threshold=0.4,
+            # max_alternatives=5
+            )
+
+    transcription = transcription['results']
+    words = []  # word, start, middle, confidence
+    for prt in transcription:
+        bst = prt['alternatives'][0]
+        for i in range(len(bst['timestamps'])):
+            words.append({'word':bst['timestamps'][i][0].lower(),
+                        'start':int(bst['timestamps'][i][1]*1000)+start_time,
+                        'middle':int(bst['timestamps'][i][2]*1000)+start_time,
+                        'confidence':bst['word_confidence'][i][1]})
+    return words
+
+def get_best(frames, trans_words, with_memo_s=True):
+    # gets score of the match betweed 
+    #   the words of frame f from word fw to the end
+    #   and the next ntw words from tw
+
+    memo, memo_s = {}, set()
+
+    def get_score_(f, fw, tw, ntw):
+        if fw == len(frames[f]['words']) and ntw==0:
+            return 0
+        if (f, fw, tw, ntw) in memo:
+            return memo[(f, fw, tw, ntw)]
+        ret = 0
+        if fw!=len(frames[f]['words']):
+            ret = max(ret, get_score_(f, fw+1, tw, ntw))
+        if ntw !=0:
+            ret = max(ret,  get_score_(f, fw, tw+1, ntw-1))
+        if fw!=len(frames[f]['words']) and ntw !=0 and \
+                    frames[f]['words'][fw] == trans_words[tw]['word']:
+            ret = max(ret, get_score_(f, fw+1, tw+1, ntw-1) + \
+                        1+trans_words[tw]['confidence'])
+        memo[(f,fw,tw,ntw)] = ret
+        return ret
+
+    def get_score(f, tw, ntw):
+        return get_score_(f, 0, tw, ntw)
+
+    # s = shift: final-initial times of the frames
+    def get_score_s(s):
+        total_score = 0
+        if with_memo_s:
+            s = (s//100)*100
+            if s in memo_s:
+                return -1
+            memo_s.add(s)
+        
+        # Get the last frame that starts before than something from the transc.
+        lo, hi = 0, len(frames) -1
+        while lo < hi:
+            mi = (lo+hi+1)//2
+            start = frames[mi]['start'] + s
+            if start > trans_words[0]['middle']:
+                hi = mi-1
+            else:
+                lo = mi
+        i, j = lo, 0
+
+        while i<len(frames) and j<len(trans_words):
+            start = frames[i]['start'] + s
+            end = frames[i]['end'] + s
+            while j<len(trans_words) and trans_words[j]['middle'] < start:
+                j += 1
+            if j<len(trans_words) and trans_words[j]['middle'] <= end:
+                left = j
+                while j<len(trans_words) and \
+                        start <= trans_words[j]['middle'] <= end:
+                    j += 1
+                total_score += get_score(i, left, j-left)
+            i += 1
+        return total_score
+
+    score = -1
+    ans = 0
+    for i,fr in enumerate(frames):
+        for j,tw in enumerate(trans_words):
+            s = tw['start'] - fr['start']
+            if abs(s) < MAX_SHIFT:
+                nscore = get_score_s(s)
+                if nscore > score:
+                    score = nscore
+                    ans = s
+
+    return ans
 
 def amazing_sync(all_matches, movie_filename):
-    # Check if movie file name makes sense
-    # Determine the audio interval we want to rip from the video
-    get_transcription(movie_filename, 10*(60*1000))
-    # Get best match
-    print('TO DO')
-    return 0
+    # TO DO: Check if movie file name makes sense
+    # TO DO: Determine the audio interval we want to rip from the video
+    start_time = 10*(60*1000) # minute 10, TESTING
+    trans_words = get_transcription(movie_filename, start_time)
+    frames = []
+    for match in all_matches:
+        h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
+            match.group('h1', 'm1', 's1', 'ms1', \
+                        'h2', 'm2', 's2', 'ms2', 'txt')
+        start, end = to_ms(h1, m1, s1, ms1), to_ms(h2, m2, s2, ms2)
+        if end < start_time-MAX_SHIFT \
+            or start > start_time + INTERVAL_LENGTH + MAX_SHIFT:
+            continue
+        frames.append({'start': start,
+                        'end': end,
+                        'words': re.sub('[!?,.♪]','',txt.lower()).split()})
+
+    print('Magic happening.')
+
+    # start_time = time.time()
+    # get_best(frames, trans_words, True)
+    # print("--- %s seconds ---" % (time.time() - start_time))
+
+    # start_time = time.time()
+    # get_best(frames, trans_words, False)
+    # print("--- %s seconds ---" % (time.time() - start_time))
+    # return 0
 
 
+    return get_best(frames, trans_words)
 
 ########### MAIN
 if __name__ == '__main__':
+    ########### Parsing arguments
     parser = argparse.ArgumentParser(description='Subtitles syncer.')
 
     parser.add_argument('srt_file', help='The srt file to sync.')
@@ -174,27 +305,23 @@ if __name__ == '__main__':
             subtitles_text = myfile.read()
     except:
         sys.exit("Error: the srt file doesn't exists or couldn't be opened D:\n")
+    ############################################
 
     ########### Parsing srt file
     matches_iterator = subtitle_regex.finditer(subtitles_text)
-    # tmp_file is used to get the more/less behavior
-    tmp_file = open(tempfile.mkstemp()[1], 'w')
+    
     all_matches = []
-    i = 1
     for match in matches_iterator:
-        print(i, ': ', match.group('txt').replace('\n',' '), 
-                '\n', sep=' ', file=tmp_file)
         all_matches.append(match)
-        i += 1
 
-    if i==1:
+    if len(all_matches)==0:
         sys.exit("Error: the file isn't a valid str file D:\n")
     ############################################
 
     print('\nNote that the srt file will be OVERWRITTEN!')
 
     if movie_filename is None:
-        dif = simple_sync(all_matches, tmp_file)
+        dif = simple_sync(all_matches)
     else:
         dif = amazing_sync(all_matches, movie_filename)
 
