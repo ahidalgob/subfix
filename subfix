@@ -7,6 +7,8 @@ import subprocess, tempfile
 import magic
 
 import time
+import threading
+import itertools
 
 import credentials
 
@@ -15,6 +17,7 @@ from watson_developer_cloud import SpeechToTextV1
 
 MAX_SHIFT = 20000000000 * 60 * 1000
 INTERVAL_LENGTH = 60*1000 -2
+AUDIO_FORMAT = 'ogg'
 
 def to_ms(h, m, s, ms):
     ms = ms[:3]
@@ -133,32 +136,11 @@ def simple_sync(all_matches):
 #######################################################
 ########### Amazing Scan
 #######################################################
-def get_transcription(movie_filename, start_time):
-    # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
-    # TO DO: MAKE MULTIPLE CONCURRENT TRANSCRIPTION TO SPEED UP THE BOTTLE NECK.
-    audio_format = 'ogg'
-
-    ########### Rips audio from video
-    print('Getting audio.')
-    tmp_audio_file = tempfile.NamedTemporaryFile(suffix='.'+audio_format)
-    subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
-        +' -vn -ss ' + to_hmsms(start_time, '.')
-        + ' -t ' + to_hmsms(INTERVAL_LENGTH, '.') + ' \"'+ tmp_audio_file.name + '\"'], 
-        stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, 
-        shell=True)
-    ############################################
-
-    speech_to_text = SpeechToTextV1(
-        username=credentials.USERNAME,
-        password=credentials.PASSWORD,
-        x_watson_learning_opt_out=False
-    )
-
-    with open(tmp_audio_file.name, 'rb') as audio_file: # TESTING
-        print('Getting transcription (chatting with watson).')
-        transcription = speech_to_text.recognize(
+def transcription_thread(audio_file, words, stt, start_time):
+    with open(audio_file.name, 'rb') as audio_file: # TESTING
+        transcription = stt.recognize(
             audio_file,
-            content_type='audio/'+ audio_format,
+            content_type='audio/'+ AUDIO_FORMAT,
             timestamps=True,
             word_confidence=True,
             model='en-US_NarrowbandModel',
@@ -167,11 +149,9 @@ def get_transcription(movie_filename, start_time):
             # keywords={"math"}, keywords_threshold=0.4,
             # max_alternatives=5
             )
-
-    tmp_audio_file.close()
-
+    audio_file.close()
     transcription = transcription['results']
-    words = []  # word, start, middle, confidence
+
     for prt in transcription:
         bst = prt['alternatives'][0]
         for i in range(len(bst['timestamps'])):
@@ -179,7 +159,45 @@ def get_transcription(movie_filename, start_time):
                         'start':int(bst['timestamps'][i][1]*1000)+start_time,
                         'middle':int(bst['timestamps'][i][2]*1000)+start_time,
                         'confidence':bst['word_confidence'][i][1]})
-    return words
+
+def get_transcription(movie_filename, start_time):
+    # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
+
+    cuts = 4
+    tmp_audio_file = [None for i in range(cuts)]
+    words = [[] for i in range(cuts)]
+
+    ########### Rips audio from video
+    print('Getting audio.')
+    for i in range(cuts):
+        tmp_audio_file[i] = tempfile.NamedTemporaryFile(suffix='.'+AUDIO_FORMAT)
+        subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
+            +' -vn -ss ' + to_hmsms(start_time + i*INTERVAL_LENGTH//cuts, '.')
+            + ' -t ' + to_hmsms(INTERVAL_LENGTH//cuts, '.') + ' \"'+ tmp_audio_file[i].name + '\"'], 
+            stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, 
+            shell=True)
+    ############################################
+
+    speech_to_text = SpeechToTextV1(
+        username=credentials.USERNAME,
+        password=credentials.PASSWORD,
+        x_watson_learning_opt_out=False
+    )
+
+    print('Getting transcription (chatting with watson).')
+
+    threads = []
+
+    for i in range(cuts):
+        t = threading.Thread(target=transcription_thread, 
+        args= (tmp_audio_file[i], words[i], speech_to_text, start_time + i*INTERVAL_LENGTH//cuts,))
+        threads.append(t)
+        t.start()
+
+    for i in range(cuts):
+        t.join()
+
+    return list(itertools.chain.from_iterable(words))
 
 def get_best(frames, trans_words, with_BS=True):
     # gets score of the match betweed 
@@ -270,6 +288,7 @@ def amazing_sync(all_matches, movie_filename):
 
     start_time = 10*(60*1000) # minute 10, TESTING
     trans_words = get_transcription(movie_filename, start_time)
+
     frames = []
     for match in all_matches:
         h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
