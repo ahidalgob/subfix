@@ -133,24 +133,31 @@ def simple_sync(all_matches):
     return to_ms(hf, mf, sf, msf) - to_ms(hi, mi, si, msi)
 
 
+## TO-DO: Fix the workaraound with the failing threads.
+
+
 #######################################################
 ########### Amazing Scan
 #######################################################
 def transcription_thread(audio_file, words, stt, start_time):
-    with open(audio_file.name, 'rb') as audio_file: # TESTING
-        transcription = stt.recognize(
-            audio_file,
-            content_type='audio/'+ AUDIO_FORMAT,
-            timestamps=True,
-            word_confidence=True,
-            model='en-US_NarrowbandModel',
-            # model='en-US_BroadbandModel',
-            # word_alternatives_threshold=0.3,
-            # keywords={"math"}, keywords_threshold=0.4,
-            # max_alternatives=5
-            )
-    audio_file.close()
-    transcription = transcription['results']
+    try:
+        with open(audio_file.name, 'rb') as audio_file: # TESTING
+            transcription = stt.recognize(
+                audio_file,
+                content_type='audio/'+ AUDIO_FORMAT,
+                timestamps=True,
+                word_confidence=True,
+                model='en-US_NarrowbandModel',
+                # model='en-US_BroadbandModel',
+                # word_alternatives_threshold=0.3,
+                # keywords={"math"}, keywords_threshold=0.4,
+                # max_alternatives=5
+                )
+        audio_file.close()
+        transcription = transcription['results']
+    except:
+        words.append(None) # fix this, do it right
+        return
 
     for prt in transcription:
         bst = prt['alternatives'][0]
@@ -178,13 +185,14 @@ def get_transcription(movie_filename, start_time):
             shell=True)
     ############################################
 
+
+    print('Getting transcription (chatting with watson).')
+
     speech_to_text = SpeechToTextV1(
         username=credentials.USERNAME,
         password=credentials.PASSWORD,
         x_watson_learning_opt_out=False
     )
-
-    print('Getting transcription (chatting with watson).')
 
     threads = []
 
@@ -194,8 +202,12 @@ def get_transcription(movie_filename, start_time):
         threads.append(t)
         t.start()
 
-    for i in range(cuts):
+    for t in threads:
         t.join()
+
+    for i in range(cuts):
+        if len(words[i]) == 1 and words[i][0] is None:
+            sys.exit('Failed to connect with watson, check internet connection and credentials.')
 
     return list(itertools.chain.from_iterable(words))
 
@@ -280,10 +292,10 @@ def amazing_sync(all_matches, movie_filename):
         if 'video' not in magic.from_file(movie_filename, mime=True):
             video_ok = False
     except:
-        exit('Error: The movie file doesn\'t exists or cannot be opened D:')
+        sys.exit('Error: The movie file doesn\'t exists or cannot be opened D:')
 
     if not video_ok:
-        exit('Error: The movie file is not a video file D:')
+        sys.exit('Error: The movie file is not a video file D:')
 
 
     start_time = 10*(60*1000) # minute 10, TESTING
