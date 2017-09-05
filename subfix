@@ -75,7 +75,7 @@ subtitle_regex = re.compile(r"""
 time_regex = re.compile(r"""
     (?P<h1>\d+):
     (?P<m1>\d+):
-    (?P<s1>\d+),
+    (?P<s1>\d+)[,.]
     (?P<ms1>\d+)
     """, re.VERBOSE | re.MULTILINE)
 
@@ -135,7 +135,6 @@ def simple_sync(all_matches):
 
 ## TO-DO: Fix the workaraound with the failing threads.
 
-
 #######################################################
 ########### Amazing Scan
 #######################################################
@@ -167,22 +166,57 @@ def transcription_thread(audio_file, words, stt, start_time):
                         'middle':int(bst['timestamps'][i][2]*1000)+start_time,
                         'confidence':bst['word_confidence'][i][1]})
 
-def get_transcription(movie_filename, start_time):
-    # TO DO: GET THE BEST FORMAT/QUALITY FOR THE RIPPED AUDIO
+def get_transcription(movie_filename):
 
-    cuts = 4
-    tmp_audio_file = [None for i in range(cuts)]
-    words = [[] for i in range(cuts)]
+    # Get length of file
+    result = subprocess.run(['ffmpeg -i \"' + movie_filename +
+        '\" 2>&1 | grep \"Duration\"| cut -d \' \' -f 4 | sed s/,//'], \
+        stdout=subprocess.PIPE, shell=True)
+    length_match = time_regex.match(result.stdout.decode('utf-8'))
+    th, tm, ts, tms = length_match.group('h1', 'm1', 's1', 'ms1')
+    total_length = to_ms(th, tm, ts, tms) - 15
+    
+    
+    cuts = 0
+    tmp_audio_file = []
+    words = []
+    start = []
+    length = []
+
+    if total_length <= 60*1000: # less or equal to a minute
+        cur_time = 0
+        while cur_time < total_length:
+            tmp_audio_file.append(None)
+            words.append([])
+            start.append(cur_time)
+            length.append(min(20*1000, total_length - cur_time))
+            cuts += 1
+            cur_time += 20*1000
+    else:
+        cuts = 5
+        if total_length > 15*60*1000:
+            cuts = 10
+        tmp_audio_file = [None for i in range(cuts)]
+        words = [[] for i in range(cuts)]
+        length = [12*1000 for i in range(cuts)]
+        start = [(total_length//cuts)*i for i in range(cuts)]
 
     ########### Rips audio from video
+    process = []
     print('Getting audio.')
     for i in range(cuts):
+        # print(i, cuts)
+        # print(to_hmsms(start[i]), to_hmsms(length[i]))
         tmp_audio_file[i] = tempfile.NamedTemporaryFile(suffix='.'+AUDIO_FORMAT)
-        subprocess.run(['yes | ffmpeg -i \"' + movie_filename +'\"'
-            +' -vn -ss ' + to_hmsms(start_time + i*INTERVAL_LENGTH//cuts, '.')
-            + ' -t ' + to_hmsms(INTERVAL_LENGTH//cuts, '.') + ' \"'+ tmp_audio_file[i].name + '\"'], 
+        p = subprocess.Popen(['yes | ffmpeg -i \"' + movie_filename +'\"'
+            +' -vn -ss ' + to_hmsms(start[i], '.')
+            + ' -t ' + to_hmsms(length[i], '.') + ' \"'+ tmp_audio_file[i].name + '\"'], 
             stdout=open(os.devnull, "w"), stderr=subprocess.STDOUT, 
             shell=True)
+        process.append(p)
+    
+    for p in process:
+        p.wait()
     ############################################
 
 
@@ -198,7 +232,7 @@ def get_transcription(movie_filename, start_time):
 
     for i in range(cuts):
         t = threading.Thread(target=transcription_thread, 
-        args= (tmp_audio_file[i], words[i], speech_to_text, start_time + i*INTERVAL_LENGTH//cuts,))
+        args= (tmp_audio_file[i], words[i], speech_to_text, start[i],))
         threads.append(t)
         t.start()
 
@@ -207,17 +241,35 @@ def get_transcription(movie_filename, start_time):
 
     for i in range(cuts):
         if len(words[i]) == 1 and words[i][0] is None:
-            sys.exit('Failed to connect with watson, check internet connection and credentials.')
+            sys.exit('Failed to connect with watson, check internet connection and credentials.\n'\
+            +'Credentials should be in a file named credentials.py in the root directory and'\
+            +'should contain only two string variables USERNAME and PASSWORD.')
 
     return list(itertools.chain.from_iterable(words))
 
-def get_best(frames, trans_words, with_BS=True):
-    # gets score of the match betweed 
-    #   the words of frame f from word fw to the end
-    #   and the next ntw words from tw
 
-    memo, memo_s = {}, set()
 
+########### Finds the best shift.
+#    frames is a list of dictionary objects, each one with fields:
+#        start: time of start, in milliseconds
+#        end: time of end, in milliseconds
+#        words: list of words in the frame
+#
+#    trans_words is a list of dictionary objects, each one with fields:
+#        start: time of start, in milliseconds
+#        middle: time of middle, in milliseconds
+#        word: the actual word
+#        confidence: confidence of the transcription, double between 0 and 1
+#   Both lists must be ordered according to the times for this
+#   function to be correct
+def get_best_shift(frames, trans_words, with_BS=True):
+
+    # memo: memoization for function get_frame_score
+    # seen_shift: set of already tried shifts (rounded to first decimal)
+    memo, seen_shift = {}, set()
+
+    # gets score of the match between the words of frame f from word fw to the end
+    #   and the next ntw words of transwords, starting at tw
     def get_frame_score(f, fw, tw, ntw):
         if fw == len(frames[f]['words']) and ntw==0:
             return 0
@@ -235,16 +287,15 @@ def get_best(frames, trans_words, with_BS=True):
         memo[(f,fw,tw,ntw)] = ret
         return ret
 
-    def get_score(f, tw, ntw):
-        return get_frame_score(f, 0, tw, ntw)
-
     # s = shift: final-initial times of the frames
-    def get_score_s(s):
+    def get_shift_score(s):
         total_score = 0
-        memo_s.add(s//100)
+        seen_shift.add(s//100)
 
         i, j = 0, 0
         while i<len(frames) and j<len(trans_words):
+            # if the next frame is before the next transc word,
+            # go quickly (bin. search) to the next relevant frame.
             if frames[i]['end'] + s < trans_words[j]['middle']:
                 lo, hi = i, len(frames) -1
                 while lo < hi:
@@ -256,33 +307,36 @@ def get_best(frames, trans_words, with_BS=True):
                         lo = mi
                 i = lo
 
-            start = frames[i]['start'] + s
-            end = frames[i]['end'] + s
+            frame_start = frames[i]['start'] + s
+            frame_end = frames[i]['end'] + s
 
-            while j<len(trans_words) and trans_words[j]['middle'] < start:
+            # skip all transc words before the current frame
+            while j<len(trans_words) and trans_words[j]['middle'] < frame_start:
                 total_score -= trans_words[j]['confidence']
                 j += 1
-            if j<len(trans_words) and trans_words[j]['middle'] <= end:
-                left = j
+
+            if j<len(trans_words) and trans_words[j]['middle'] <= frame_end:
+                first = j
                 while j<len(trans_words) and \
-                        start <= trans_words[j]['middle'] <= end:
+                        frame_start <= trans_words[j]['middle'] <= frame_end:
                     j += 1
-                total_score += get_score(i, left, j-left)
+                total_score += get_frame_score(i, 0, first, j-first)
             i += 1
         return total_score
 
     score = -1
-    ans = 0
+    best_shift = 0
+    # Try all possible shifts
     for i,fr in enumerate(frames):
         for j,tw in enumerate(trans_words):
-            s = tw['start'] - fr['start']
-            if s//100 not in memo_s:
-                nscore = get_score_s(s)
+            current_shift = tw['start'] - fr['start']
+            if current_shift//100 not in seen_shift:
+                nscore = get_shift_score(current_shift)
                 if nscore > score:
                     score = nscore
-                    ans = s
+                    best_shift = current_shift
 
-    return ans
+    return best_shift
 
 def amazing_sync(all_matches, movie_filename):
     # TO DO: Determine the audio interval we want to rip from the video
@@ -298,29 +352,28 @@ def amazing_sync(all_matches, movie_filename):
         sys.exit('Error: The movie file is not a video file D:')
 
 
-    start_time = 10*(60*1000) # minute 10, TESTING
-    trans_words = get_transcription(movie_filename, start_time)
-
     frames = []
     for match in all_matches:
         h1, m1, s1, ms1, h2, m2, s2, ms2, txt = \
             match.group('h1', 'm1', 's1', 'ms1', \
                         'h2', 'm2', 's2', 'ms2', 'txt')
         start, end = to_ms(h1, m1, s1, ms1), to_ms(h2, m2, s2, ms2)
-        if end < start_time-MAX_SHIFT \
-            or start > start_time + INTERVAL_LENGTH + MAX_SHIFT:
-            continue
+        # if end < start_time-MAX_SHIFT \
+        #     or start > start_time + INTERVAL_LENGTH + MAX_SHIFT:
+        #     continue
         frames.append({'start': start,
                         'end': end,
-                        'words': re.sub('[!?,.♪]','',txt.lower()).split()})
+                        'words': re.sub('[!?,.♪\[\]]','',txt.lower()).split()})
 
-    print('Magic happening.')
+    trans_words = get_transcription(movie_filename)
+
+    print('Magic\'s happening.')
 
     # start_time = time.time()
-    # get_best(frames, trans_words)
+    # get_best_shift(frames, trans_words)
     # print("--- %s seconds ---" % (time.time() - start_time))
 
-    return get_best(frames, trans_words)
+    return get_best_shift(frames, trans_words)
 
 ########### MAIN
 if __name__ == '__main__':
